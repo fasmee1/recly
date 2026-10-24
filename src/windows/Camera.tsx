@@ -7,6 +7,9 @@ import { SHAPES, Shape, loadSettings, saveSettings, shapeClip, shapeRadius } fro
 const MIME = ["video/webm;codecs=h264", "video/webm;codecs=vp8", "video/webm"].find((m) =>
   MediaRecorder.isTypeSupported(m),
 );
+// VP8 is software-encoded; at 720p it can take a whole core on low-end CPUs.
+const HW = MIME?.includes("h264");
+const CAM = HW ? { w: 1280, h: 720, fps: 30, bps: 4_000_000 } : { w: 854, h: 480, fps: 24, bps: 1_500_000 };
 
 export default function Camera() {
   const video = useRef<HTMLVideoElement>(null);
@@ -18,7 +21,7 @@ export default function Camera() {
 
   useEffect(() => {
     navigator.mediaDevices
-      .getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: false })
+      .getUserMedia({ video: { width: { ideal: CAM.w }, height: { ideal: CAM.h }, frameRate: { ideal: CAM.fps } }, audio: false })
       .then((ms) => {
         stream.current = ms;
         if (video.current) video.current.srcObject = ms;
@@ -42,7 +45,7 @@ export default function Camera() {
 
   function startRecording() {
     if (!stream.current || recorder.current?.state === "recording") return;
-    const rec = new MediaRecorder(stream.current, { mimeType: MIME, videoBitsPerSecond: 4_000_000 });
+    const rec = new MediaRecorder(stream.current, { mimeType: MIME, videoBitsPerSecond: CAM.bps });
     let startMs = 0;
     // Chunks are appended to cam.webm in order, so keep the uploads serialized.
     let chain = Promise.resolve();

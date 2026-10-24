@@ -55,14 +55,22 @@ export default function Export() {
   const [includeCam, setIncludeCam] = useState(true);
   const [ratio, setRatio] = useState(0.6);
   const [focus, setFocus] = useState({ x: 0.5, y: 0.5 });
+  const [zoom, setZoom] = useState(1);
   const [cam, setCam] = useState({ x: 0.03, y: 0.7, size: 0.16 });
   const [micVol, setMicVol] = useState(1);
   const [sysVol, setSysVol] = useState(0.8);
   const [quality, setQuality] = useState(1080);
   const [trim, setTrim] = useState<[number, number]>([0, 0]);
+  const [denoise, setDenoise] = useState(false);
+  const [cutSilence, setCutSilence] = useState(false);
+  const [silDb, setSilDb] = useState<number | null>(null); // null = automatic threshold
+  const [silMin, setSilMin] = useState(0.6);
+  const [silRanges, setSilRanges] = useState<[number, number][]>([]);
+  const [silInfo, setSilInfo] = useState({ thresholdDb: -50, speechFound: true });
 
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const shownT = useRef(0);
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState("");
   const [exportError, setExportError] = useState("");
@@ -84,6 +92,7 @@ export default function Export() {
       setIncludeCam(!!s.cam);
       if (s.cam) setCam({ x: s.cam.x, y: s.cam.y, size: s.cam.size });
       setTrim([0, s.duration]);
+      setSilRanges([]);
       setT(0);
       setResult("");
       setProgress(null);
@@ -135,16 +144,56 @@ export default function Export() {
     }
   };
 
+  // ----- silence cutting -----
+  const hasAudio = !!(session?.mic || session?.system);
+  useEffect(() => {
+    if (!cutSilence || !session || !hasAudio) {
+      setSilRanges([]);
+      return;
+    }
+    let stale = false;
+    const id = setTimeout(() => {
+      invoke<{ thresholdDb: number; speechFound: boolean; ranges: [number, number][] }>("detect_silence", {
+        dir: session.dir, noiseDb: silDb, minDur: silMin,
+      })
+        .then((r) => {
+          if (stale) return;
+          setSilRanges(r.ranges);
+          setSilInfo({ thresholdDb: r.thresholdDb, speechFound: r.speechFound });
+        })
+        .catch(() => !stale && setSilRanges([]));
+    }, 300);
+    return () => {
+      stale = true;
+      clearTimeout(id);
+    };
+  }, [cutSilence, silDb, silMin, session]);
+
+  // Silences inside the trimmed range; these are removed from the export and skipped in the preview.
+  const cuts = (cutSilence ? silRanges : [])
+    .map(([a, b]) => [Math.max(a, trim[0]), Math.min(b, trim[1])] as [number, number])
+    .filter(([a, b]) => b > a);
+  const removed = cuts.reduce((sum, [a, b]) => sum + b - a, 0);
+
   useEffect(() => {
     if (!playing) return;
     let raf = 0;
     const tick = () => {
       const sv = screenV.current;
       if (sv) {
-        setT(sv.currentTime);
+        // Re-rendering the whole window every frame is costly on slow machines; ~15 fps is enough for the playhead.
+        if (Math.abs(sv.currentTime - shownT.current) >= 1 / 15) {
+          shownT.current = sv.currentTime;
+          setT(sv.currentTime);
+        }
         if (sv.currentTime >= trim[1]) {
           sv.pause();
           setPlaying(false);
+        }
+        const hit = cuts.find(([a, b]) => sv.currentTime >= a && sv.currentTime < b - 0.02);
+        if (hit) {
+          sv.currentTime = hit[1];
+          sync(true);
         }
         sync();
       }
@@ -205,6 +254,14 @@ export default function Export() {
   if (fh > box.h) { fh = box.h; fw = box.h * aspect; }
   const hasCam = !!session?.cam && includeCam;
   const topH = hasCam ? fh * ratio : fh;
+  // Vertical: the screen's size depends only on zoom (1 = full width), not on the split.
+  const sw = fw * zoom;
+  const sh = session ? (sw * session.height) / session.width : 0;
+  const screenBox = {
+    width: sw, height: sh,
+    left: -(sw - fw) * focus.x,
+    top: sh > topH ? -(sh - topH) * focus.y : (topH - sh) / 2,
+  };
 
   const camPx = cam.size * fw;
   const dragCam = (e: React.PointerEvent) => {
@@ -220,7 +277,10 @@ export default function Export() {
   const dragFocus = (e: React.PointerEvent) => {
     const f0 = focus;
     startDrag(e, (dx, dy) =>
-      setFocus({ x: clamp(f0.x - dx / fw, 0, 1), y: clamp(f0.y - dy / topH, 0, 1) }),
+      setFocus({
+        x: clamp(f0.x - dx / Math.max(1, sw - fw), 0, 1),
+        y: clamp(f0.y - dy / Math.max(1, sh - topH), 0, 1),
+      }),
     );
   };
   const dragSplit = (e: React.PointerEvent) => {
@@ -230,7 +290,8 @@ export default function Export() {
 
   // ----- export -----
   const clipDur = Math.max(0, trim[1] - trim[0]);
-  const estMB = Math.max(1, Math.round((clipDur * (MBPS[quality] + 0.2)) / 8));
+  const outDur = Math.max(0, clipDur - removed);
+  const estMB = Math.max(1, Math.round((outDur * (MBPS[quality] + 0.2)) / 8));
 
   const doExport = async () => {
     if (!session) return;
@@ -243,9 +304,9 @@ export default function Export() {
       const out = await invoke<string>("export_video", {
         dir: session.dir,
         opts: {
-          layout, shape, includeCam: hasCam, ratio, focusX: focus.x, focusY: focus.y,
+          layout, shape, includeCam: hasCam, ratio, focusX: focus.x, focusY: focus.y, zoom,
           camX: cam.x, camY: cam.y, camSize: cam.size,
-          micVol, sysVol, quality, trimStart: trim[0], trimEnd: trim[1],
+          micVol, sysVol, quality, trimStart: trim[0], trimEnd: trim[1], cut: cuts, denoise,
         },
       });
       setResult(out);
@@ -262,6 +323,10 @@ export default function Export() {
     await win.close();
   };
 
+  // Leaving before the MP4 is saved loses the edit, so ask first.
+  const [confirmClose, setConfirmClose] = useState(false);
+  const requestClose = () => (result ? close() : setConfirmClose(true));
+
   if (!session) {
     return (
       <div className="window" style={{ display: "grid", placeItems: "center" }} data-tauri-drag-region>
@@ -276,16 +341,16 @@ export default function Export() {
   );
 
   return (
-    <div className="window export">
+    <div className="window export" style={{ position: "relative" }}>
       <div className="stage">
         <div className="stage-top" data-tauri-drag-region>
-          <button className="icon-btn" onClick={close} title="กลับ"><ChevronLeft size={18} /></button>
+          <button className="icon-btn" onClick={requestClose} title="กลับ"><ChevronLeft size={18} /></button>
           <span className="title" style={{ pointerEvents: "none" }}>
             บันทึก {session.dir.split(/[\\/]/).pop()?.replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/, "$1-$2-$3 $4:$5")}
           </span>
           <span className="spacer" />
           <span className="sub" style={{ pointerEvents: "none" }}>
-            {fmtTime(clipDur)} · {layout === "vertical" ? `${quality} × ${Math.round((quality * 16) / 9)}` : `${Math.round((Math.min(quality, session.height) * session.width) / session.height)} × ${Math.min(quality, session.height)}`}
+            {fmtTime(outDur)} ·{layout === "vertical" ? `${quality} × ${Math.round((quality * 16) / 9)}` : `${Math.round((Math.min(quality, session.height) * session.width) / session.height)} × ${Math.min(quality, session.height)}`}
           </span>
         </div>
 
@@ -314,8 +379,8 @@ export default function Export() {
                   onPointerDown={dragFocus}
                 >
                   <video
-                    ref={screenV} src={src(session.screen)} muted preload="auto" className="cover"
-                    style={{ objectPosition: `${focus.x * 100}% ${focus.y * 100}%` }}
+                    ref={screenV} src={src(session.screen)} muted preload="auto"
+                    style={{ position: "absolute", ...screenBox }}
                   />
                 </div>
                 {hasCam && (
@@ -355,6 +420,9 @@ export default function Export() {
                 return <i key={i} className={pos >= trim[0] && pos <= trim[1] ? "in" : ""} style={{ height: `${Math.max(8, Math.sqrt(v) * 100)}%` }} />;
               })}
             </div>
+            {cutSilence && silRanges.map(([a, b], i) => (
+              <div key={i} className="silence-seg" style={{ left: `${(a / dur) * 100}%`, width: `${((b - a) / dur) * 100}%` }} />
+            ))}
             <div className="trim-box" style={{ left: `${(trim[0] / dur) * 100}%`, right: `${100 - (trim[1] / dur) * 100}%` }} />
             <div className="trim-handle" style={{ left: `calc(${(trim[0] / dur) * 100}% - 6px)` }} onPointerDown={trackDrag(0)} />
             <div className="trim-handle" style={{ left: `calc(${(trim[1] / dur) * 100}% - 6px)` }} onPointerDown={trackDrag(1)} />
@@ -367,7 +435,7 @@ export default function Export() {
       <div className="panel">
         <div className="row" data-tauri-drag-region>
           <span style={{ fontSize: 16, fontWeight: 600, pointerEvents: "none" }}>ส่งออกวิดีโอ</span>
-          <button className="icon-btn" onClick={close} title="ปิด"><X size={16} /></button>
+          <button className="icon-btn" onClick={requestClose} title="ปิด"><X size={16} /></button>
         </div>
 
         <div className="section">
@@ -377,6 +445,14 @@ export default function Export() {
             <button className={layout === "vertical" ? "active" : ""} onClick={() => setLayout("vertical")}>แนวตั้ง 9:16</button>
           </div>
         </div>
+
+        {layout === "vertical" && (
+          <div className="section">
+            <span className="label">ภาพจอ</span>
+            <div className="row"><span>ซูม</span><span className="sub">{zoom <= 1.001 ? "พอดีความกว้าง" : `${zoom.toFixed(1)}×`}</span></div>
+            <Slider value={zoom} min={1} max={4} onChange={setZoom} />
+          </div>
+        )}
 
         {session.cam && (
           <div className="section">
@@ -417,6 +493,12 @@ export default function Export() {
                 </div>
               </div>
             )}
+            {session.mic && (
+              <div className="section-head">
+                <span>ลดเสียงรบกวนไมค์</span>
+                <button className={`toggle ${denoise ? "on" : ""}`} onClick={() => setDenoise(!denoise)} />
+              </div>
+            )}
             {session.system && (
               <div className="vol">
                 <Volume2 size={16} color="var(--muted)" />
@@ -425,6 +507,41 @@ export default function Export() {
                   <Slider value={sysVol} min={0} max={2} onChange={setSysVol} />
                 </div>
               </div>
+            )}
+          </div>
+        )}
+
+        {hasAudio && (
+          <div className="section">
+            <div className="section-head">
+              <span className="label">ตัดช่วงเงียบ</span>
+              <button className={`toggle ${cutSilence ? "on" : ""}`} onClick={() => setCutSilence(!cutSilence)} />
+            </div>
+            {cutSilence && (
+              <>
+                <div className="row">
+                  <span>ถือว่าเงียบเมื่อเบากว่า</span>
+                  <span className="sub">
+                    {Math.round(silDb ?? silInfo.thresholdDb)} dB
+                    {silDb === null ? " · อัตโนมัติ" : ""}
+                  </span>
+                </div>
+                <Slider value={silDb ?? silInfo.thresholdDb} min={-90} max={-20} step={1} onChange={setSilDb} />
+                {silDb !== null && (
+                  <button className="btn-ghost" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setSilDb(null)}>
+                    กลับไปใช้ค่าอัตโนมัติ
+                  </button>
+                )}
+                <div className="row"><span>เงียบนานเกิน</span><span className="sub">{silMin.toFixed(1)} วินาที</span></div>
+                <Slider value={silMin} min={0.3} max={3} step={0.1} onChange={setSilMin} />
+                <div className="sub">
+                  {!silInfo.speechFound && silDb === null
+                    ? "แยกเสียงพูดออกจากเสียงพื้นหลังไม่ได้ (ไมค์เบามากหรือไม่มีคำพูด) จึงไม่ตัดอะไร"
+                    : cuts.length
+                      ? `ตัดออก ${cuts.length} ช่วง รวม ${removed.toFixed(1)} วินาที`
+                      : "ไม่พบช่วงเงียบ ลองเลื่อนค่าไปทางขวา"}
+                </div>
+              </>
             )}
           </div>
         )}
@@ -461,6 +578,21 @@ export default function Export() {
           <Download size={18} />ส่งออก MP4
         </button>
       </div>
+
+      {confirmClose && (
+        <div className="confirm-overlay" onClick={() => setConfirmClose(false)}>
+          <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>ออกโดยไม่บันทึก?</div>
+            <div className="sub">
+              {progress !== null ? "กำลังส่งออกอยู่ ถ้าออกตอนนี้วิดีโออาจไม่สมบูรณ์" : "วิดีโอนี้ยังไม่ได้ส่งออกเป็น MP4 การปรับแต่งในหน้านี้จะหายไป"}
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn-ghost" style={{ flex: 1 }} onClick={() => setConfirmClose(false)}>อยู่ต่อ</button>
+              <button className="btn-primary" style={{ flex: 1, fontSize: 14 }} onClick={close}>ออกโดยไม่บันทึก</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

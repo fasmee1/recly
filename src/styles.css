@@ -196,7 +196,7 @@ select { font: inherit; }
 .frame .cover { object-fit: cover; }
 .cam-overlay { position: absolute; overflow: hidden; cursor: grab; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4); }
 .cam-overlay video { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
-.split-top { position: absolute; left: 0; right: 0; top: 0; overflow: hidden; cursor: ew-resize; }
+.split-top { position: absolute; left: 0; right: 0; top: 0; overflow: hidden; cursor: move; background: #000; }
 .split-bottom { position: absolute; left: 0; right: 0; bottom: 0; overflow: hidden; }
 .split-handle { position: absolute; left: 0; right: 0; height: 14px; transform: translateY(-7px); cursor: ns-resize; display: grid; place-items: center; z-index: 2; }
 .split-handle::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; background: rgba(255, 255, 255, 0.9); }
@@ -222,3 +222,17 @@ select { font: inherit; }
 .progress { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
 .progress div { height: 100%; background: var(--accent); transition: width 0.2s; }
 .spacer { flex: 1; }
+
+.confirm-overlay {
+  position: absolute; inset: 0; z-index: 10; display: grid; place-items: center;
+  background: rgba(14, 14, 17, 0.7); border-radius: 20px;
+}
+.confirm-card {
+  width: 340px; display: flex; flex-direction: column; gap: 12px; padding: 20px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+}
+
+.silence-seg {
+  position: absolute; top: 0; bottom: 0; border-radius: 3px; pointer-events: none;
+  background: repeating-linear-gradient(45deg, rgba(255, 69, 69, 0.4) 0 4px, rgba(255, 69, 69, 0.18) 4px 8px);
+}

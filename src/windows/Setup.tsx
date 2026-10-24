@@ -11,6 +11,7 @@ interface DisplayInfo { index: number; name: string; width: number; height: numb
 interface AudioDevices { inputs: string[]; defaultInput: string | null; output: string | null }
 
 const win = getCurrentWindow();
+const RESOLUTIONS = [[0, "ต้นฉบับ"], [1440, "1440p"], [1080, "1080p"], [720, "720p"]] as const;
 
 function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
   return <button className={`toggle ${on ? "on" : ""}`} onClick={() => onChange(!on)} aria-pressed={on} />;
@@ -98,7 +99,7 @@ export default function Setup() {
     try {
       await invoke("start_recording", {
         opts: {
-          display: s.display, fps: s.fps, mic: s.mic, micDevice: s.micDevice,
+          display: s.display, fps: s.fps, resolution: outRes, mic: s.mic, micDevice: s.micDevice,
           system: s.system, camera: s.camera, shape: s.shape, layout: s.layout,
         },
       });
@@ -134,6 +135,12 @@ export default function Setup() {
   };
 
   const display = displays[s.display] ?? displays[0];
+  // Only offer downscales; a choice at or above the display's height means native.
+  const resOptions = RESOLUTIONS.filter(([r]) => r === 0 || !display || r < display.height);
+  const outRes = display && s.resolution > 0 && s.resolution < display.height ? s.resolution : 0;
+  const outSize = display && (outRes
+    ? `${Math.round((display.width * outRes) / display.height / 2) * 2} × ${outRes}`
+    : `${display.width} × ${display.height}`);
   const micName = s.micDevice ?? audio.defaultInput ?? "ไม่พบไมโครโฟน";
 
   return (
@@ -153,10 +160,17 @@ export default function Setup() {
         <div className="section">
           <div className="section-head">
             <span className="label">แหล่งภาพ</span>
-            <div className="seg mini">
-              {([30, 60] as const).map((f) => (
-                <button key={f} className={s.fps === f ? "active" : ""} onClick={() => update({ fps: f })}>{f} fps</button>
-              ))}
+            <div style={{ display: "flex", gap: 6 }}>
+              <div className="seg mini" title="ความชัด">
+                {resOptions.map(([r, label]) => (
+                  <button key={r} className={outRes === r ? "active" : ""} onClick={() => update({ resolution: r })}>{label}</button>
+                ))}
+              </div>
+              <div className="seg mini">
+                {([30, 60] as const).map((f) => (
+                  <button key={f} className={s.fps === f ? "active" : ""} onClick={() => update({ fps: f })}>{f} fps</button>
+                ))}
+              </div>
             </div>
           </div>
           <div className="card">
@@ -165,7 +179,7 @@ export default function Setup() {
               <div className="title">
                 {display ? `Display ${display.index + 1}${display.primary ? " · จอหลัก" : ""}` : "ทั้งหน้าจอ"}
               </div>
-              <div className="sub">{display ? `${display.width} × ${display.height} · ${s.fps} fps` : "กำลังค้นหาจอ…"}</div>
+              <div className="sub">{display ? `${outSize} · ${s.fps} fps` : "กำลังค้นหาจอ…"}</div>
             </div>
             <ChevronDown size={16} color="var(--muted)" />
             {displays.length > 1 && (

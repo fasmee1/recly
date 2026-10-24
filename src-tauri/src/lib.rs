@@ -233,6 +233,9 @@ async fn set_monitor(app: AppHandle, mic: bool, mic_device: Option<String>, syst
 struct StartOpts {
     display: u32,
     fps: u32,
+    /// Output height (720, 1080, …); 0 = the display's native resolution.
+    #[serde(default)]
+    resolution: u32,
     mic: bool,
     mic_device: Option<String>,
     system: bool,
@@ -268,7 +271,7 @@ async fn start_recording(app: AppHandle, opts: StartOpts) -> Result<StartResult,
         std::fs::create_dir_all(&dir).map_err(e2s)?;
 
         let fps = if opts.fps == 60 { 60 } else { 30 };
-        let screen = Screen::start(opts.display, fps, &dir.join("screen.mp4"))?;
+        let screen = Screen::start(opts.display, fps, opts.resolution, &dir.join("screen.mp4"))?;
 
         let mut warnings = vec![];
         let mic = if opts.mic {
@@ -476,6 +479,16 @@ async fn waveform(dir: String) -> Vec<f32> {
 }
 
 #[tauri::command]
+async fn detect_silence(dir: String, noise_db: Option<f64>, min_dur: f64) -> Result<recorder::Silence, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = Session::load(Path::new(&dir))?;
+        recorder::detect_silence(&session, noise_db.map(|d| d.clamp(-90.0, -10.0)), min_dur.clamp(0.2, 5.0))
+    })
+    .await
+    .map_err(e2s)?
+}
+
+#[tauri::command]
 async fn export_video(app: AppHandle, dir: String, opts: ExportOpts) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let session = Session::load(Path::new(&dir))?;
@@ -515,9 +528,9 @@ pub fn run() {
                 .global_shortcut()
                 .register(Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR));
 
-            // Probe the hardware encoder early so the first recording starts instantly.
+            // Probe the hardware encoder and capture path early so the first recording starts instantly.
             std::thread::spawn(|| {
-                ffmpeg::encoder();
+                ffmpeg::capture_chain(0);
             });
 
             // Level meters: emit peak values ~12×/s while any capture is running.
@@ -552,6 +565,7 @@ pub fn run() {
             cam_finished,
             current_session,
             waveform,
+            detect_silence,
             export_video
         ])
         .run(tauri::generate_context!())

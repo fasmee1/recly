@@ -4,6 +4,8 @@ export type Layout = "horizontal" | "vertical";
 export interface Settings {
   display: number;
   fps: 30 | 60;
+  /** Recorded height; 0 = the display's native resolution. */
+  resolution: number;
   mic: boolean;
   micDevice: string | null;
   system: boolean;
@@ -17,6 +19,7 @@ const KEY = "recly.settings";
 export const defaultSettings: Settings = {
   display: 0,
   fps: 30,
+  resolution: 0,
   mic: true,
   micDevice: null,
   system: true,
